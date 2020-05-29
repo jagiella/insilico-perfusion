@@ -1,0 +1,11 @@
+
+dist/
+
+examples/__pycache__/
+
+build/
+
+perfusion.egg-info/
+
+*.png
+*.pyc

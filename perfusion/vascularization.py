@@ -8,6 +8,7 @@ import time
 import sys
 import numpy as np
 import json
+import cv2
 from scipy.sparse import lil_matrix, csc_matrix, csr_matrix
 from scipy.sparse.linalg import spsolve, bicgstab
 
@@ -231,7 +232,39 @@ class Vascularization:
                     fp.write('%f setlinewidth\n' % (node.edges[i].radius*scale))
                     fp.write('%d %d moveto\n' % (node.x*60*scale,node.y*60*scale))
                     fp.write('%d %d lineto\n' % (neighbor.x*60*scale,neighbor.y*60*scale))
-                    fp.write('stroke\n')
+                    fp.write('stroke\n')    
+                    
+    def toImage(self, filename, plotRoots=False, plotTips=False):
+        scale = .1
+        
+        img_h = int( self.height*60*scale)
+        img_w = int( self.width*60*scale)
+        img = np.zeros( (img_h, img_w, 3))
+        
+        print( 'Image: '+str(img.shape))
+        
+        for node in self.nodes:
+            # if( plotRoots and node.nodeType == Node.ROOT ):
+            #     fp.write('%d %d %f 0 360 arc\n' % (node.x*60*scale,node.y*60*scale, 60.*scale))
+            # if( plotTips and node.isTip()):
+            #     fp.write('%d %d %f 0 360 arc\n' % (node.x*60*scale,node.y*60*scale, 20.*scale))
+                
+            for i, neighbor in enumerate(node.neighbors):
+                pressure = (node.pressure + neighbor.pressure) / 2.
+                rel = (pressure - 2.) / (12. - 2.)
+                color = (256-int(256*rel), 0, int(256*rel))
+                pt1 = (int(node.x*60*scale), int(node.y*60*scale))
+                pt2 = (int(neighbor.x*60*scale), int(neighbor.y*60*scale))
+                thickness = int( np.ceil(node.edges[i].radius*scale))
+                cv2.line( img, pt1,pt2, color, thickness)
+                # fp.write('%f %f %f setrgbcolor\n' % (1-rel,0,rel))
+                # fp.write('%f setlinewidth\n' % (node.edges[i].radius*scale))
+                # fp.write('%d %d moveto\n' % (node.x*60*scale,node.y*60*scale))
+                # fp.write('%d %d lineto\n' % (neighbor.x*60*scale,neighbor.y*60*scale))
+                # fp.write('stroke\n')
+                
+        cv2.imwrite( filename, img)
+    
                     
     def toEPSshear(self, filename):
         
@@ -363,27 +396,30 @@ class Vascularization:
                     count_collapses += 1
             # print('%d collapses' % count_collapses)
             
-    def calculatePerfusion(self, timestep, AIF, Kps=1):
+    def calculatePerfusion(self, starttime, endtime, timestep, AIF, Kps=1):
+        timestep_plot = 0.1 # sec
+        
         n = len(self.nodes)
         # print('create sparse matrix: %dx%d' % (n,n))
         # A = csc_matrix((n,n))
         # A = lil_matrix((n,n))
+
+        # precalculate constant properties
         v = [ node.volume() for node in self.nodes]
         s = [ node.surface() for node in self.nodes]
+        
         b = [0] * n
         x = [0] * n
-        concP = np.zeros((100,100))
+        concP = np.zeros((self.width,self.height))
         
-        concI0 = np.zeros((100,100))
-        concI1 = np.zeros((100,100))
+        concI0 = np.zeros((self.width,self.height))
+        concI1 = np.zeros((self.width,self.height))
         
-        t = 0
-        for it in range(10000):
-            with Chrono('build A'):
+        # t = 0
+        for t in np.arange(starttime, endtime, timestep):
+            with Chrono('explicit Euler (t=%f sec)' % (t)):
                 
-                for i in range(100):
-                    for j in range(100):
-                        concI1[i][j] = concI0[i][j]
+                concI1[:,:] = concI0[:,:]
                 
                 for i, node in enumerate(self.nodes):
                     assert( i == node.index)
@@ -396,10 +432,7 @@ class Vascularization:
                         for neighbor, edge in zip(node.neighbors, node.edges):
                             j = neighbor.index
                             Gij = np.pi / 8. * edge.radius**4 / (edge.length * edge.viscosity())
-                            # print(Gij)
-                            # Gij = 1
                             Fij = Gij * (neighbor.pressure - node.pressure) * timestep
-                            # print(Fij)
                             if( Fij > 0):
                                 # influx
                                 b[i] += x[j] * Fij / v[i]
@@ -414,19 +447,20 @@ class Vascularization:
                 
             x[:] = b[:]
             concI0[:,:] = concI1[:,:]
-            if( it%10==0):
+            
+            # plot
+            if( int(t/timestep_plot) != int((t+timestep)/timestep_plot) ):
                 for i, node in enumerate(self.nodes):
                     concP[ node.x, node.y] = x[i] * v[i] / (60**3)
-                # import matplotlib.pyplot as plt
-                import cv2
-                # plt.imshow( conc)
-                # plt.draw()
-                # plt.savefig('conc.png')
-                cv2.imwrite( 'concP_%03d.png' % (it/10), concP/1*256)
-                cv2.imwrite( 'concI_%03d.png' % (it/10), concI0/6*256)
-                cv2.imwrite( 'conc_%03d.png' % (it/10), (concI0 + concP)/6.*256)
+
+                # print( )
+                it = int(t/timestep_plot)
+
+                cv2.imwrite( 'concP_%03d.png' % (it), concP/1*256)
+                cv2.imwrite( 'concI_%03d.png' % (it), concI0/6*256)
+                cv2.imwrite( 'conc_%03d.png' % (it), (concI0 + concP)/6.*256)
                     
-                print( np.mean(x))
+                # print( np.mean(x))
                 
             t += timestep
         #x = bicgstab(A,b)[0]

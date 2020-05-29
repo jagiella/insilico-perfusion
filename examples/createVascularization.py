@@ -7,22 +7,30 @@ Created on Thu May 28 23:57:03 2020
 """
 
 import pickle
+import numpy
 
 from perfusion.vascularization import Vascularization, Node, Chrono
 
+
+numpy.random.seed( 42)
+
+# vascularization = pickle.load( open('vasc.pkl', 'rb'))
 vascularization = Vascularization( 100, 100)
 
-print( '')
+print( 'place artery')
 vascularization.addNode( Node( 50,50, Node.ROOT, 12))
 
+print( 'place venes')
 vascularization.addNode( Node(  0,50, Node.ROOT, 2))
 vascularization.addNode( Node( 80, 0, Node.ROOT, 2))
 vascularization.addNode( Node( 80,99, Node.ROOT, 2))
 
+print('initial random growth')
 vascularization.grow( 70)
          
-for i in range(200):
-    print( 'ITERATION %i' % (i))
+for i in range(250):
+# for i in range(200, 250):
+    print( '\n\nITERATION %i' % (i))
     with Chrono('grow'):
         vascularization.grow(10, sproutingProbability=0.25)
     with Chrono('calculateRadii'):
@@ -35,7 +43,8 @@ for i in range(200):
     with Chrono('calculateShearStress'):
         vascularization.calculateShearStress()
 
-    vascularization.toEPS('pressure_%i.eps' % (i))
+    vascularization.toImage('pressure_%i.png' % (i))
+    # vascularization.toEPS('pressure_%i.eps' % (i))
 
     with Chrono('removeCapillaries'):
         vascularization.removeCapillaries()
