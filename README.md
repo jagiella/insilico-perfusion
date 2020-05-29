@@ -20,6 +20,6 @@ python examples/createVascularization.py
 python examples/calcPerfusion.py
 ```
 
-![](concP.gif "intra-vascular marker concentration"){:height="200%" width="200%"}
-![](concI.gif "interstitial marker concentration"){:height="200%" width="200%"}
-![](conc.gif "marker concentration"){:height="200%" width="200%"}
+![](concP.gif "intra-vascular marker concentration")
+![](concI.gif "interstitial marker concentration")
+![](conc.gif "marker concentration")
