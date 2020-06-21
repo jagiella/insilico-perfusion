@@ -9,8 +9,10 @@ import sys
 import numpy as np
 import json
 import cv2
+import pickle
 from scipy.sparse import lil_matrix, csc_matrix, csr_matrix
 from scipy.sparse.linalg import spsolve, bicgstab
+from scipy.signal import convolve2d
 
 class Chrono:
     
@@ -33,13 +35,16 @@ class Chrono:
         
 
 class Edge:
-    
+    # types
     VESSEL = 0
-    CAPILLARY = 1    
+    CAPILLARY = 1   
+    
+    #properties
+    # length = 60
     
     def __init__(self, nodes, edgeType=VESSEL):
         self.radius = 0
-        self.length = 60
+        #self.length = self.latticeConstant
         self.index = None
         self.nodes = nodes
         self.edgeType = edgeType
@@ -47,6 +52,14 @@ class Edge:
     def isTip(self):
         return self.nodes[0].isTip() or self.nodes[1].isTip()
         
+
+    ### Properties:
+
+    @property
+    def length(self):
+        return Vascularization.latticeConstant
+
+    @property
     def viscosity( self):
         return 4 * 1e-6 * (6*np.exp(-0.17*self.radius) + 3.1 - 2.44*np.exp(-0.06*(2*self.radius)**0.645))
     
@@ -70,14 +83,14 @@ class Node:
         return '(%d,%d)' % (self.x,self.y)        
         
         
-    def connect_(self, node, edge ):
+    def _connect(self, node, edge ):
         if( node in self.neighbors):
             print('already connected')
         else:
             self.neighbors.append(node)
             self.edges.append(edge)
             
-    def disconnect_(self, node, edge ):
+    def _disconnect(self, node, edge ):
         if( node not in self.neighbors):
             print('not connected')
         else:
@@ -87,14 +100,14 @@ class Node:
     @staticmethod
     def connect(node1, node2 ):
         edge = Edge([node1,node2])
-        node1.connect_(node2, edge)
-        node2.connect_(node1, edge)
+        node1._connect(node2, edge)
+        node2._connect(node1, edge)
         return edge
         
     @staticmethod
     def disconnect( edge):
-        edge.nodes[0].disconnect_(edge.nodes[1], edge)
-        edge.nodes[1].disconnect_(edge.nodes[0], edge)
+        edge.nodes[0]._disconnect(edge.nodes[1], edge)
+        edge.nodes[1]._disconnect(edge.nodes[0], edge)
         
     def isTip(self):
         #return len(self.neighbors)==1       
@@ -104,12 +117,18 @@ class Node:
         return node in self.neighbors
     #def update(self):
         
+
+    ### Properties:
+        
+    @property
     def volume(self):
         V = 0
         for edge in self.edges:
             Vij = np.pi * edge.radius**2 * edge.length
             V += Vij / 2.
         return V
+
+    @property
     def surface(self):
         A = 0
         for edge in self.edges:
@@ -117,13 +136,59 @@ class Node:
             A += Aij / 2.
         return A
     
-
+class Region:
+    def __init__(self, center, radius, **properties):
+        self.radius = radius
+        self.x = center[0]
+        self.y = center[1]
+        self.properties = properties
+        
+    def containes(self, pos):
+        # if( isinstance( node_or_edge, Node)):
+        #     node = node_or_edge
+        #     return (node.x-self.x)**2 + (node.y-self.y)**2 < self.radius**2
+        # if( isinstance( node_or_edge, Edge)):
+        #     edge = node_or_edge
+        #     node1 = edge.nodes[0]
+        #     node2 = edge.nodes[1]
+        #     return (node1.x-self.x)**2 + (node1.y-self.y)**2 < self.radius**2 or (node2.x-self.x)**2 + (node2.y-self.y)**2 < self.radius**2
+        # if( isinstance( pos, [tuple])):
+        x = pos[0]
+        y = pos[1]
+        return (x-self.x)**2 + (y-self.y)**2 < self.radius**2
+            
+    def getProperty(self, pos, name):
+        # print( name, self.properties)
+        if( name in self.properties and self.containes( pos)):
+            return self.properties[ name]
+        else:
+            return None
+        
+        
+        
+        
 class Vascularization:
-    def __init__(self, width, height):
+    
+    latticeConstant = 60.
+    
+    def __init__(self, width, height, latticeConstant=60.):
+        ''' Returns the reversed String.
+         Parameters:
+            width (int): The string which is to be reversed.
+            height (int): The string which is to be reversed.
+            latticeConstant (float): The string which is to be reversed.
+         Returns:
+            reverse(str1): The string which gets reversed.  
+        '''
+        # properties
         self.width = width
         self.height = height
+
+        Vascularization.latticeConstant = latticeConstant
+        
         self.nodes = []
         self.edges = []
+        self.regions = []
         self.grid = np.empty((width, height), dtype=object)
     
     def __str__(self):
@@ -132,6 +197,13 @@ class Vascularization:
     # def save(self, filename):
     #     print('build json')
         
+    def save(self, filename):
+        pickle.dump( self, open( filename, 'wb'))
+    
+    @staticmethod
+    def load( filename):
+        vascularization = pickle.load( open( filename, 'rb'))
+        return vascularization
     
     def addNode(self, node):
         node.index = len(self.nodes)
@@ -150,12 +222,24 @@ class Vascularization:
         edge.index = len(self.edges)
         self.edges.append(edge)
     
+    def addRegion(self, region):
+        self.regions.insert( 0, region)
     
-    def posFree( self,x,y):
+    def _posFree( self,x,y):
         return self.grid[x][y] is None
-    def posInDomain( self,x,y):
+    def _posInDomain( self,x,y):
         return x>=0 and y>=0 and x<self.width and y<self.height
     
+    def _getProperty(self, pos, name, default):
+        # print( name, pos)
+        for r in self.regions:
+            value = r.getProperty( pos, name)
+            # print(value)
+            if( value is not None):
+                # print('got region value: %s=%f' % (name, value))
+                return value
+        return default
+        
     
     def addCapillaries(self):
         for i, node in enumerate(self.nodes):
@@ -167,7 +251,7 @@ class Vascularization:
                       [+1, 0]]
                 for dx in DX: 
                     x,y = node.x+dx[0],node.y+dx[1]
-                    if( self.posInDomain( x,y) and not self.posFree( x,y)):
+                    if( self._posInDomain( x,y) and not self._posFree( x,y)):
                         #print('found neighbor')
                         neighbor = self.grid[x,y]
                         if( neighbor.isTip() and not node.isNeighbor(neighbor)):
@@ -183,7 +267,7 @@ class Vascularization:
                 self.edges.remove( edge)
                 Node.disconnect( edge)
     
-    def grow(self, iterations=1, sproutingProbability=0.5):
+    def grow(self, iterations=1, sproutingProbability=1.0):
         for it in range(iterations):
             n = len(self.nodes)
             I = np.random.permutation(n)
@@ -196,11 +280,14 @@ class Vascularization:
                 #print( str(node))
                 #dx = np.random.randint(2)*2-1
                 DX = [[0,-1],
-                    [0,+1],
-                    [-1,0],
-                    [+1,0]]
+                      [0,+1],
+                      [-1,0],
+                      [+1,0]]
+                
+                baseProbability = self._getProperty( (node.x,node.y), 'sproutingProbability', sproutingProbability)
+                
                 for dx in DX:    
-                    if( self.posInDomain( node.x+dx[0],node.y+dx[1]) and self.posFree( node.x+dx[0],node.y+dx[1]) and np.random.rand() < sproutingProbability):
+                    if( self._posInDomain( node.x+dx[0],node.y+dx[1]) and self._posFree( node.x+dx[0],node.y+dx[1]) and np.random.rand() < baseProbability/4.):
                         new_node = Node( node.x+dx[0],node.y+dx[1])
                         new_edge = Node.connect( node,new_node)
                         self.addNode( new_node)
@@ -218,50 +305,60 @@ class Vascularization:
         scale = .1
         with open( filename, 'w+') as fp:
             fp.write('%!PS-Adobe-3.1 EPSF-3.0\n')
-            fp.write('%%%%BoundingBox: 0 0 %d %d\n' % (self.width*60*scale,self.height*60*scale))
+            fp.write('%%%%BoundingBox: 0 0 %d %d\n' % (self.width*self.latticeConstant*scale,self.height*self.latticeConstant*scale))
             for node in self.nodes:
                 if( plotRoots and node.nodeType == Node.ROOT ):
-                    fp.write('%d %d %f 0 360 arc\n' % (node.x*60*scale,node.y*60*scale, 60.*scale))
+                    fp.write('%d %d %f 0 3self.latticeConstant arc\n' % (node.x*self.latticeConstant*scale,node.y*self.latticeConstant*scale, self.latticeConstant*scale))
                 if( plotTips and node.isTip()):
-                    fp.write('%d %d %f 0 360 arc\n' % (node.x*60*scale,node.y*60*scale, 20.*scale))
+                    fp.write('%d %d %f 0 3self.latticeConstant arc\n' % (node.x*self.latticeConstant*scale,node.y*self.latticeConstant*scale, self.latticeConstant/3*scale))
                     
                 for i, neighbor in enumerate(node.neighbors):
                     pressure = (node.pressure + neighbor.pressure) / 2.
                     rel = (pressure - 2.) / (12. - 2.)
                     fp.write('%f %f %f setrgbcolor\n' % (1-rel,0,rel))
                     fp.write('%f setlinewidth\n' % (node.edges[i].radius*scale))
-                    fp.write('%d %d moveto\n' % (node.x*60*scale,node.y*60*scale))
-                    fp.write('%d %d lineto\n' % (neighbor.x*60*scale,neighbor.y*60*scale))
+                    fp.write('%d %d moveto\n' % (node.x*self.latticeConstant*scale,node.y*self.latticeConstant*scale))
+                    fp.write('%d %d lineto\n' % (neighbor.x*self.latticeConstant*scale,neighbor.y*self.latticeConstant*scale))
                     fp.write('stroke\n')    
                     
-    def toImage(self, filename, plotRoots=False, plotTips=False):
-        scale = .1
+    def toImage(self, filename, plotRoots=False, plotTips=False, plotRegions=True):
+        scale = int(.1 * self.latticeConstant)
         
-        img_h = int( self.height*60*scale)
-        img_w = int( self.width*60*scale)
-        img = np.zeros( (img_h, img_w, 3))
+        img_h = int( self.height*scale)
+        img_w = int( self.width*scale)
+        img = np.ones( (img_h, img_w, 3))*255
         
         print( 'Image: '+str(img.shape))
         
+        if( plotRegions):
+            img_r = img.copy()
+            colors = [[255,0,0], [0,255,0], [0,0,255]]
+            for i, r in enumerate(self.regions):
+                cv2.circle( img_r, (r.x*scale,r.y*scale), r.radius*scale, colors[i], -1)
+            alpha = 0.3
+            img = cv2.addWeighted( img_r, alpha, img, 1-alpha, 0)
+
+
         for node in self.nodes:
             # if( plotRoots and node.nodeType == Node.ROOT ):
-            #     fp.write('%d %d %f 0 360 arc\n' % (node.x*60*scale,node.y*60*scale, 60.*scale))
+            #     fp.write('%d %d %f 0 3self.latticeConstant arc\n' % (node.x*self.latticeConstant*scale,node.y*self.latticeConstant*scale, self.latticeConstant.*scale))
             # if( plotTips and node.isTip()):
-            #     fp.write('%d %d %f 0 360 arc\n' % (node.x*60*scale,node.y*60*scale, 20.*scale))
+            #     fp.write('%d %d %f 0 3self.latticeConstant arc\n' % (node.x*self.latticeConstant*scale,node.y*self.latticeConstant*scale, 20.*scale))
                 
             for i, neighbor in enumerate(node.neighbors):
                 pressure = (node.pressure + neighbor.pressure) / 2.
                 rel = (pressure - 2.) / (12. - 2.)
                 color = (256-int(256*rel), 0, int(256*rel))
-                pt1 = (int(node.x*60*scale), int(node.y*60*scale))
-                pt2 = (int(neighbor.x*60*scale), int(neighbor.y*60*scale))
-                thickness = int( np.ceil(node.edges[i].radius*scale))
+                pt1 = (int(node.x*scale), int(node.y*scale))
+                pt2 = (int(neighbor.x*scale), int(neighbor.y*scale))
+                thickness = int( np.ceil(node.edges[i].radius/self.latticeConstant*scale))
                 cv2.line( img, pt1,pt2, color, thickness)
                 # fp.write('%f %f %f setrgbcolor\n' % (1-rel,0,rel))
                 # fp.write('%f setlinewidth\n' % (node.edges[i].radius*scale))
-                # fp.write('%d %d moveto\n' % (node.x*60*scale,node.y*60*scale))
-                # fp.write('%d %d lineto\n' % (neighbor.x*60*scale,neighbor.y*60*scale))
+                # fp.write('%d %d moveto\n' % (node.x*self.latticeConstant*scale,node.y*self.latticeConstant*scale))
+                # fp.write('%d %d lineto\n' % (neighbor.x*self.latticeConstant*scale,neighbor.y*self.latticeConstant*scale))
                 # fp.write('stroke\n')
+                
                 
         cv2.imwrite( filename, img)
     
@@ -274,13 +371,13 @@ class Vascularization:
         
         scale = .1
         with open( filename, 'w+') as fp:
-            fp.write('%% BoundingBox: 0 0 %d %d\n' % (self.width*60*scale,self.height*60*scale))
+            fp.write('%% BoundingBox: 0 0 %d %d\n' % (self.width*self.latticeConstant*scale,self.height*self.latticeConstant*scale))
             for edge in self.edges:
                 rel = (edge.shearStress - shearStress_min) / (shearStress_max - shearStress_min)
                 fp.write('%f %f %f setrgbcolor\n' % (rel,0,1-rel))
                 fp.write('%f setlinewidth\n' % (edge.radius*scale))
-                fp.write('%d %d moveto\n' % (edge.nodes[0].x*60*scale,edge.nodes[0].y*60*scale))
-                fp.write('%d %d lineto\n' % (edge.nodes[1].x*60*scale,edge.nodes[1].y*60*scale))
+                fp.write('%d %d moveto\n' % (edge.nodes[0].x*self.latticeConstant*scale,edge.nodes[0].y*self.latticeConstant*scale))
+                fp.write('%d %d lineto\n' % (edge.nodes[1].x*self.latticeConstant*scale,edge.nodes[1].y*self.latticeConstant*scale))
                 fp.write('stroke\n')
                     
     def calculateRadii(self):
@@ -318,7 +415,7 @@ class Vascularization:
                     already_set = True
                 
                 if( count_not_set==1 and node.nodeType != Node.ROOT ):
-                    edge_not_set.radius = min( 60, np.sum([ edge.radius**2 for edge in node.edges ])**0.5)
+                    edge_not_set.radius = min( self.latticeConstant, np.sum([ edge.radius**2 for edge in node.edges ])**0.5)
                     count_radii_set += 1
                     already_set = True
                     
@@ -350,7 +447,7 @@ class Vascularization:
                     #b[i] = 0
                     for neighbor, edge in zip(node.neighbors, node.edges):
                         j = neighbor.index
-                        Gij = np.pi / 8. * edge.radius**4 / (edge.length * edge.viscosity())
+                        Gij = np.pi / 8. * edge.radius**4 / (edge.length * edge.viscosity)
                         #print('i:%d, j:%d' % (i,j))
                         A[i,i] += Gij
                         #print(j)
@@ -368,7 +465,7 @@ class Vascularization:
         for edge in self.edges:
             edge.shearStress = np.fabs( edge.nodes[0].pressure - edge.nodes[1].pressure) * edge.radius / (2 * edge.length)
             
-    def collapse(self, iterations=1, collapseProbability=0.2):
+    def collapse(self, iterations=1, collapseProbability=1.0):
 
         shearStress = [ edge.shearStress for edge in self.edges ]     
         shearStress_min = np.min(shearStress)
@@ -383,7 +480,10 @@ class Vascularization:
             for edge in reversed(self.edges):
             #for edge in tips:
         
-                proba = collapseProbability * (shearStress_max - edge.shearStress) / (shearStress_max-shearStress_min)            
+                baseProbability = self._getProperty( (edge.nodes[0].x,edge.nodes[0].y), 'collapseProbability', collapseProbability)
+                proba = baseProbability * (shearStress_max - edge.shearStress) / (shearStress_max-shearStress_min)            
+                # proba = collapseProbability * (shearStress_max - edge.shearStress) / (shearStress_max-shearStress_min)            
+                
                 
                 if( edge.isTip() and np.random.rand() < proba):
                     #print('collapse')
@@ -396,7 +496,7 @@ class Vascularization:
                     count_collapses += 1
             # print('%d collapses' % count_collapses)
             
-    def calculatePerfusion(self, starttime, endtime, timestep, AIF, Kps=1):
+    def calculatePerfusion(self, starttime, endtime, timestep, AIF, Kps=1, diffusionCoef=0):
         timestep_plot = 0.1 # sec
         
         n = len(self.nodes)
@@ -405,15 +505,17 @@ class Vascularization:
         # A = lil_matrix((n,n))
 
         # precalculate constant properties
-        v = [ node.volume() for node in self.nodes]
-        s = [ node.surface() for node in self.nodes]
+        v = [ node.volume for node in self.nodes]
+        s = [ node.surface for node in self.nodes]
         
-        b = [0] * n
-        x = [0] * n
+        b = np.zeros( (n))
+        x = np.zeros( (n))
         concP = np.zeros((self.width,self.height))
         
         concI0 = np.zeros((self.width,self.height))
         concI1 = np.zeros((self.width,self.height))
+
+        conc = np.zeros((self.width,self.height))
         
         # t = 0
         for t in np.arange(starttime, endtime, timestep):
@@ -431,7 +533,7 @@ class Vascularization:
                         b[i] = x[i] # current conecntration
                         for neighbor, edge in zip(node.neighbors, node.edges):
                             j = neighbor.index
-                            Gij = np.pi / 8. * edge.radius**4 / (edge.length * edge.viscosity())
+                            Gij = np.pi / 8. * edge.radius**4 / (edge.length * edge.viscosity)
                             Fij = Gij * (neighbor.pressure - node.pressure) * timestep
                             if( Fij > 0):
                                 # influx
@@ -439,8 +541,22 @@ class Vascularization:
                             else:
                                 # outflux
                                 b[i] += x[i] * Fij / v[i]
-                    concI1[node.x, node.y] += Kps*s[i] * (x[i] - concI0[node.x, node.y]) / (60**3 - v[i]) * timestep
+                    perm = self._getProperty( [node.x, node.y], 'Kps', Kps)
+                    
+                    maxVolFrac = 0.9
+                    if( self.latticeConstant**3*maxVolFrac < v[i]):
+                        # print('vessel volume too large')
+                        concI1[node.x, node.y] += perm*s[i] * (x[i] - concI0[node.x, node.y]) / ((1.-maxVolFrac)*self.latticeConstant**3) * timestep
+                    else:
+                        concI1[node.x, node.y] += perm*s[i] * (x[i] - concI0[node.x, node.y]) / (self.latticeConstant**3 - v[i]) * timestep
                                 
+            # Diffusion
+            # DIFFUSION_COEFFICIENT = 0.001
+            if( (b < 0).any() ):
+                print('negative conc (plasma)')
+            if( (concI1 < 0).any() ):
+                print('negative conc (interstitial)')
+            concI1 += diffusionCoef * convolve2d( concI0, [[0, 1, 0], [1, -4, 1], [0, 1, 0]], mode='same', boundary='wrap') * timestep
     
             # with Chrono('solve x=b/A'):
                 # x = spsolve(A,b)
@@ -450,15 +566,18 @@ class Vascularization:
             
             # plot
             if( int(t/timestep_plot) != int((t+timestep)/timestep_plot) ):
+                conc[:,:] = concI0[:,:]
                 for i, node in enumerate(self.nodes):
-                    concP[ node.x, node.y] = x[i] * v[i] / (60**3)
+                    concP[ node.x, node.y] = x[i] * v[i] / (self.latticeConstant**3)
+                    
+                    conc[ node.x, node.y] = concP[ node.x, node.y] + concI0[ node.x, node.y]*(1 - v[i]/self.latticeConstant**3)
 
                 # print( )
                 it = int(t/timestep_plot)
 
-                cv2.imwrite( 'concP_%03d.png' % (it), concP/1*256)
-                cv2.imwrite( 'concI_%03d.png' % (it), concI0/6*256)
-                cv2.imwrite( 'conc_%03d.png' % (it), (concI0 + concP)/6.*256)
+                cv2.imwrite( 'concP_%03d.png' % (it), concP.T/1.*256)
+                cv2.imwrite( 'concI_%03d.png' % (it), concI0.T/1*256)
+                cv2.imwrite( 'conc_%03d.png' % (it), conc.T/1*256)
                     
                 # print( np.mean(x))
                 
@@ -471,7 +590,7 @@ class Vascularization:
         
         
 def AIF(t):
-    t = t / 60. # sec to min
+    t = t / 60 # sec to min
     
     A = [0.809, 0.330]
     T = [0.171, 0.365]
