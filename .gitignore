@@ -7,5 +7,5 @@ build/
 
 perfusion.egg-info/
 
-*.png
+
 *.pyc

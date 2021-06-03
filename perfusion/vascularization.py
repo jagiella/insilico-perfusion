@@ -58,7 +58,18 @@ class Edge:
     @property
     def length(self):
         return Vascularization.latticeConstant
-
+    
+    @property
+    def surface(self):
+        # if(self.radius < 100):
+        return 2. * np.pi * self.radius * self.length
+        # else:
+            # return 0
+    
+    @property
+    def volume(self):
+        return np.pi * self.radius**2 * self.length
+    
     @property
     def viscosity( self):
         return 4 * 1e-6 * (6*np.exp(-0.17*self.radius) + 3.1 - 2.44*np.exp(-0.06*(2*self.radius)**0.645))
@@ -122,19 +133,11 @@ class Node:
         
     @property
     def volume(self):
-        V = 0
-        for edge in self.edges:
-            Vij = np.pi * edge.radius**2 * edge.length
-            V += Vij / 2.
-        return V
+        return np.sum(edge.volume / 2. for edge in self.edges)
 
     @property
     def surface(self):
-        A = 0
-        for edge in self.edges:
-            Aij = 2. * np.pi * edge.radius * edge.length
-            A += Aij / 2.
-        return A
+        return np.sum(edge.surface / 2. for edge in self.edges)
     
 class Region:
     def __init__(self, center, radius, **properties):
@@ -497,6 +500,103 @@ class Vascularization:
             # print('%d collapses' % count_collapses)
             
     def calculatePerfusion(self, starttime, endtime, timestep, AIF, Kps=1, diffusionCoef=0):
+        timestep_plot = 1 # sec
+        
+        nx, ny = self.width, self.height
+        n = nx*ny
+        
+        def index(x,y):
+            return x + y*self.width
+            # return node.y + node.x*self.width
+        
+        r  = np.array([index(node.x,node.y) for node in self.nodes if(node.nodeType == Node.ROOT)], dtype=int)
+        print(r)
+        cP = np.zeros((nx*ny))
+        cI = np.zeros((nx*ny))
+        ct = np.zeros((nx*ny))
+
+        v  = self.latticeConstant**3
+        vP = np.zeros((nx*ny))+0.01
+        vI = np.zeros((nx*ny))+v
+        kPS= np.zeros((nx*ny))
+
+        # fI = csr_matrix((n,n))
+        # fO = csr_matrix((n,n))
+        f = csr_matrix((n,n))
+        d = csr_matrix((n,n))
+        
+        dt = timestep
+        
+        with Chrono('build vectors and matrices'):
+            for node in self.nodes:
+                i = index(node.x,node.y)
+                
+                # volumes
+                vP[i] = min(node.volume, 0.9*v)
+                vI[i] = v - vP[i]
+                
+                # permeability
+                kPS[i] = self._getProperty( [node.x, node.y], 'Kps', Kps) * node.surface
+                
+                # flow
+                for neighbor, edge in zip(node.neighbors, node.edges):
+                    j = index(neighbor.x,neighbor.y)
+                    
+                    Gij = np.pi / 8. * edge.radius**4 / (edge.length * edge.viscosity)
+                    Fij = Gij * (neighbor.pressure - node.pressure)
+                    if( Fij > 0):
+                        # influx
+                        f[i,j] = Fij
+                    else:
+                        # outflux
+                        f[i,i] += Fij
+                        
+            for x, y in np.ndindex((nx,ny)):
+                i = index(x,y)
+                # d[i,i] = 0
+                if(x>0):
+                    j = index(x-1,y)
+                    mV = (vI[i]+vI[j]) / 2 * diffusionCoef / self.latticeConstant**2
+                    d[i,i]-=mV; d[i,j]+=mV
+                if(y>0):
+                    j = index(x,y-1)
+                    mV = (vI[i]+vI[j]) / 2 * diffusionCoef / self.latticeConstant**2
+                    d[i,i]-=mV; d[i,j]+=mV
+                if(x<self.width-1):
+                    j = index(x+1,y)
+                    mV = (vI[i]+vI[j]) / 2 * diffusionCoef / self.latticeConstant**2
+                    d[i,i]-=mV; d[i,j]+=mV
+                if(y<self.height-1):
+                    j = index(x,y+1)
+                    mV = (vI[i]+vI[j]) / 2 * diffusionCoef / self.latticeConstant**2
+                    d[i,i]-=mV; d[i,j]+=mV
+    
+
+
+        for t in np.arange(starttime, endtime, timestep):
+            with Chrono('explicit Euler (t=%f sec)' % (t)):
+
+                if(np.isnan(cI).any()):
+                    raise Exception('cI has nan values')
+                if(np.isnan(cP).any()):
+                    raise Exception('cP has nan values')
+
+                cP[r] = AIF(t)                    
+                dcP = dt/vP * (f.dot(cP) - kPS*(cP-cI))
+                dcI = dt/vI * (d.dot(cI) + kPS*(cP-cI))
+
+                cP += dcP
+                cI += dcI
+                
+            if( round(t/timestep_plot) != round((t+timestep)/timestep_plot) ):
+                it = round(t/timestep_plot)
+                cv2.imwrite( 'concP_%03d.png' % (it), np.reshape(cP, (nx,ny))/1.*256)
+                cv2.imwrite( 'concI_%03d.png' % (it), np.reshape(cI, (nx,ny))*2/1.*256)
+                cv2.imwrite( 'conc_%03d.png' % (it), np.reshape((cP*vP + cI*vI)/v, (nx,ny))*2/1.*256)
+            t += timestep
+        
+        
+    def calculatePerfusion_old(self, starttime, endtime, timestep, AIF, Kps=1, diffusionCoef=0):
         timestep_plot = 0.1 # sec
         
         n = len(self.nodes)
@@ -525,30 +625,40 @@ class Vascularization:
                 
                 for i, node in enumerate(self.nodes):
                     assert( i == node.index)
+                    
+                    
+                    # FLOW
+                    
                     if(node.nodeType == Node.ROOT):
                         # A[i,i] = 1
                         b[i] = AIF(t)
                     else:
                         # A[i,i] = 1
-                        b[i] = x[i] # current conecntration
+                        b[i] = x[i] # current concentration
                         for neighbor, edge in zip(node.neighbors, node.edges):
                             j = neighbor.index
                             Gij = np.pi / 8. * edge.radius**4 / (edge.length * edge.viscosity)
-                            Fij = Gij * (neighbor.pressure - node.pressure) * timestep
+                            Fij = Gij * (neighbor.pressure - node.pressure)
                             if( Fij > 0):
                                 # influx
-                                b[i] += x[j] * Fij / v[i]
+                                b[i] += x[j] * Fij / v[i] * timestep
                             else:
                                 # outflux
-                                b[i] += x[i] * Fij / v[i]
+                                b[i] += x[i] * Fij / v[i] * timestep
+                    
+                    
+                    # PERFUSION
+                    
                     perm = self._getProperty( [node.x, node.y], 'Kps', Kps)
                     
                     maxVolFrac = 0.9
-                    if( self.latticeConstant**3*maxVolFrac < v[i]):
-                        # print('vessel volume too large')
-                        concI1[node.x, node.y] += perm*s[i] * (x[i] - concI0[node.x, node.y]) / ((1.-maxVolFrac)*self.latticeConstant**3) * timestep
+                    if( v[i] / self.latticeConstant**3 > maxVolFrac):
+                        v_I = ((1.-maxVolFrac)*self.latticeConstant**3)
                     else:
-                        concI1[node.x, node.y] += perm*s[i] * (x[i] - concI0[node.x, node.y]) / (self.latticeConstant**3 - v[i]) * timestep
+                        v_I = (self.latticeConstant**3 - v[i])
+                        
+                    concI1[node.x, node.y] += perm*s[i] * (x[i] - concI0[node.x, node.y]) / v_I * timestep
+                    b[i]                   += perm*s[i] * (concI0[node.x, node.y] - x[i]) / v[i]* timestep
                                 
             # Diffusion
             # DIFFUSION_COEFFICIENT = 0.001
@@ -565,19 +675,25 @@ class Vascularization:
             concI0[:,:] = concI1[:,:]
             
             # plot
-            if( int(t/timestep_plot) != int((t+timestep)/timestep_plot) ):
+            # print( "%f == %f" % (t/timestep_plot, (t+timestep)/timestep_plot))
+            if( round(t/timestep_plot) != round((t+timestep)/timestep_plot) ):
+                it = round(t/timestep_plot)
+            # if( t/timestep_plot <= it and it < (t+timestep)/timestep_plot ):
                 conc[:,:] = concI0[:,:]
                 for i, node in enumerate(self.nodes):
-                    concP[ node.x, node.y] = x[i] * v[i] / (self.latticeConstant**3)
+                    phiP = v[i] / (self.latticeConstant**3)
                     
-                    conc[ node.x, node.y] = concP[ node.x, node.y] + concI0[ node.x, node.y]*(1 - v[i]/self.latticeConstant**3)
+                    concP[ node.x, node.y] = x[i]
+                    
+                    conc[ node.x, node.y] = concP[ node.x, node.y] * phiP + concI0[ node.x, node.y] * (1 - phiP)
 
                 # print( )
-                it = int(t/timestep_plot)
+                # it = int(t/timestep_plot)
+                # print( 'it: %d' % (it))
 
-                cv2.imwrite( 'concP_%03d.png' % (it), concP.T/1.*256)
-                cv2.imwrite( 'concI_%03d.png' % (it), concI0.T/1*256)
-                cv2.imwrite( 'conc_%03d.png' % (it), conc.T/1*256)
+                cv2.imwrite( 'concP_%03d.png' % (it), concP.T/2.*256)
+                cv2.imwrite( 'concI_%03d.png' % (it), concI0.T/2.*256)
+                cv2.imwrite( 'conc_%03d.png' % (it), conc.T/2.*256)
                     
                 # print( np.mean(x))
                 

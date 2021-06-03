@@ -30,4 +30,4 @@ vascularization.addRegion( Region( [75,50], 15, Kps=10))
 # vascularization.toEPS('before_perfusion.eps')
 vascularization.toImage('before_perfusion.png')
 
-vascularization.calculatePerfusion( 0, 60, 0.1, AIF, Kps=1, diffusionCoef=0)
+vascularization.calculatePerfusion( 0, 180, 0.01, AIF, Kps=0.1, diffusionCoef=100.)
